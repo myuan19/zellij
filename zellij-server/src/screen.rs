@@ -283,6 +283,8 @@ pub enum ScreenInstruction {
         bool,                // is_web_client
         Option<usize>,       // tab position to focus
         Option<(u32, bool)>, // (pane_id, is_plugin) => pane_id to focus
+        Option<bool>,        // has_x11 - whether client has X11 environment
+        Option<String>,      // display - DISPLAY environment variable value
     ),
     RemoveClient(ClientId),
     UpdateSearch(Vec<u8>, ClientId, Option<NotificationEnd>),
@@ -922,6 +924,8 @@ pub(crate) struct Screen {
     render_blocker: RenderBlocker,
     watcher_clients: HashMap<ClientId, WatcherState>,
     followed_client_id: Option<ClientId>,
+    /// Temporary storage for client X11 info before tabs are created
+    pending_client_x11_info: HashMap<ClientId, (Option<bool>, Option<String>)>,
 }
 
 impl Screen {
@@ -1007,6 +1011,7 @@ impl Screen {
             render_blocker: RenderBlocker::new(100),
             watcher_clients: HashMap::new(),
             followed_client_id: None,
+            pending_client_x11_info: HashMap::new(),
         }
     }
 
@@ -1050,7 +1055,7 @@ impl Screen {
                     self.active_tab_indices
                         .insert(client_id, client_previous_tab);
                     client_active_tab
-                        .add_client(client_id, Some(client_mode_info))
+                        .add_client(client_id, Some(client_mode_info), None, None) // X11 info not available when moving clients
                         .with_context(err_context)?;
                     continue;
                 }
@@ -1059,7 +1064,7 @@ impl Screen {
             self.tabs
                 .get_mut(&first_tab_index)
                 .with_context(err_context)?
-                .add_client(client_id, Some(client_mode_info))
+                .add_client(client_id, Some(client_mode_info), None, None) // X11 info not available when moving clients
                 .with_context(err_context)?;
         }
         Ok(())
@@ -1746,6 +1751,29 @@ impl Screen {
             tab.change_mode_info(mode_info.clone(), *client_id);
         }
         self.tabs.insert(tab_index, tab);
+        
+        // Process any pending clients that were waiting for tabs to be created
+        let pending_clients: Vec<(ClientId, bool, Option<bool>, Option<String>)> = self
+            .pending_client_x11_info
+            .iter()
+            .map(|(client_id, (has_x11, display))| {
+                let is_web_client = self.connected_clients
+                    .borrow()
+                    .get(client_id)
+                    .copied()
+                    .unwrap_or(false);
+                (*client_id, is_web_client, *has_x11, display.clone())
+            })
+            .collect();
+        
+        for (client_id, is_web_client, has_x11, display) in pending_clients {
+            self.pending_client_x11_info.remove(&client_id);
+            // Now that we have a tab, we can properly add the client
+            if let Err(e) = self.add_client(client_id, is_web_client, has_x11, display) {
+                log::error!("Failed to add pending client {} after tab creation: {}", client_id, e);
+            }
+        }
+        
         Ok(())
     }
     pub fn apply_layout(
@@ -1859,7 +1887,10 @@ impl Screen {
 
         if !self.active_tab_indices.contains_key(&client_id) {
             // this means this is a new client and we need to add it to our state properly
-            self.add_client(client_id, is_web_client)
+            // Try to get X11 info from pending_client_x11_info first
+            let (has_x11, display) = self.pending_client_x11_info.remove(&client_id)
+                .unwrap_or((None, None));
+            self.add_client(client_id, is_web_client, has_x11, display)
                 .with_context(err_context)?;
         }
 
@@ -1868,7 +1899,7 @@ impl Screen {
             .with_context(err_context)
     }
 
-    pub fn add_client(&mut self, client_id: ClientId, is_web_client: bool) -> Result<()> {
+    pub fn add_client(&mut self, client_id: ClientId, is_web_client: bool, has_x11: Option<bool>, display: Option<String>) -> Result<()> {
         let err_context = |tab_index| {
             format!("failed to attach client {client_id} to tab with index {tab_index}")
         };
@@ -1876,6 +1907,15 @@ impl Screen {
         // Set followed_client_id to the first regular client if not already set
         if self.followed_client_id.is_none() && !self.watcher_clients.contains_key(&client_id) {
             self.followed_client_id = Some(client_id);
+        }
+
+        // If no tabs exist yet, store X11 info for later use
+        if self.tabs.is_empty() {
+            self.pending_client_x11_info.insert(client_id, (has_x11, display));
+            self.connected_clients
+                .borrow_mut()
+                .insert(client_id, is_web_client);
+            return Ok(());
         }
 
         let mut tab_history = vec![];
@@ -1903,7 +1943,7 @@ impl Screen {
         self.tabs
             .get_mut(&tab_index)
             .with_context(|| err_context(tab_index))?
-            .add_client(client_id, None)
+            .add_client(client_id, None, has_x11, display)
             .with_context(|| err_context(tab_index))
     }
 
@@ -3413,6 +3453,17 @@ impl Screen {
                 floating_panes,
             );
         }
+        
+        // Collect client X11 info from all tabs
+        let mut client_x11_info: HashMap<ClientId, bool> = HashMap::new();
+        for tab in self.tabs.values() {
+            let tab_x11_info = tab.get_client_x11_info();
+            for (client_id, has_x11) in tab_x11_info {
+                client_x11_info.insert(client_id, has_x11);
+            }
+        }
+        session_layout_metadata.set_client_x11_info(client_x11_info);
+        
         session_layout_metadata
     }
     fn update_plugin_loading_stage(
@@ -5008,8 +5059,10 @@ pub(crate) fn screen_thread_main(
                 is_web_client,
                 tab_position_to_focus,
                 pane_id_to_focus,
+                has_x11,
+                display,
             ) => {
-                screen.add_client(client_id, is_web_client)?;
+                screen.add_client(client_id, is_web_client, has_x11, display)?;
                 let pane_id = pane_id_to_focus.map(|(pane_id, is_plugin)| {
                     if is_plugin {
                         PaneId::Plugin(pane_id)

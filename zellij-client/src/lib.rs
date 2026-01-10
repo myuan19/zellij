@@ -638,6 +638,10 @@ pub fn start_client(
             let ipc_pipe = create_ipc_pipe();
             let is_web_client = false;
 
+            // Check if client has X11 environment
+            let display = std::env::var("DISPLAY").ok();
+            let has_x11 = display.is_some().then_some(true);
+
             let cli_assets = CliAssets {
                 config_file_path: Config::config_file_path(&cli_args),
                 config_dir: cli_args.config_dir.clone(),
@@ -661,6 +665,8 @@ pub fn start_client(
                 max_panes: cli_args.max_panes,
                 force_run_layout_commands: false,
                 cwd: None,
+                has_x11,
+                display,
             };
             (
                 ClientToServerMsg::AttachClient {
@@ -691,6 +697,10 @@ pub fn start_client(
         ClientInfo::Resurrect(name, path_to_layout, force_run_commands, cwd) => {
             envs::set_session_name(name.clone());
 
+            // Check if client has X11 environment
+            let display = std::env::var("DISPLAY").ok();
+            let has_x11 = display.is_some().then_some(true);
+
             let cli_assets = CliAssets {
                 config_file_path: Config::config_file_path(&cli_args),
                 config_dir: cli_args.config_dir.clone(),
@@ -703,6 +713,8 @@ pub fn start_client(
                 max_panes: cli_args.max_panes,
                 force_run_layout_commands: force_run_commands,
                 cwd,
+                has_x11,
+                display,
             };
 
             os_input.update_session_name(name);
@@ -727,6 +739,10 @@ pub fn start_client(
         },
         ClientInfo::New(name, layout_info, layout_cwd) => {
             envs::set_session_name(name.clone());
+
+            // Check if client has X11 environment
+            let display = std::env::var("DISPLAY").ok();
+            let has_x11 = display.is_some().then_some(true);
 
             let cli_assets = CliAssets {
                 config_file_path: Config::config_file_path(&cli_args),
@@ -753,6 +769,8 @@ pub fn start_client(
                 max_panes: cli_args.max_panes,
                 force_run_layout_commands: false,
                 cwd: layout_cwd,
+                has_x11,
+                display,
             };
 
             os_input.update_session_name(name);
@@ -1123,6 +1141,10 @@ pub fn start_server_detached(
         ClientInfo::Resurrect(name, path_to_layout, force_run_commands, cwd) => {
             envs::set_session_name(name.clone());
 
+            // Check if client has X11 environment
+            let display = std::env::var("DISPLAY").ok();
+            let has_x11 = display.is_some().then_some(true);
+
             let cli_assets = CliAssets {
                 config_file_path: Config::config_file_path(&cli_args),
                 config_dir: cli_args.config_dir.clone(),
@@ -1136,6 +1158,8 @@ pub fn start_server_detached(
                 max_panes: cli_args.max_panes,
                 force_run_layout_commands: force_run_commands,
                 cwd,
+                has_x11,
+                display,
             };
 
             os_input.update_session_name(name);
@@ -1160,6 +1184,10 @@ pub fn start_server_detached(
         },
         ClientInfo::New(name, layout_info, layout_cwd) => {
             envs::set_session_name(name.clone());
+
+            // Check if client has X11 environment
+            let display = std::env::var("DISPLAY").ok();
+            let has_x11 = display.is_some().then_some(true);
 
             let cli_assets = CliAssets {
                 config_file_path: Config::config_file_path(&cli_args),
@@ -1187,6 +1215,8 @@ pub fn start_server_detached(
                 max_panes: cli_args.max_panes,
                 force_run_layout_commands: false,
                 cwd: layout_cwd,
+                has_x11,
+                display,
             };
 
             os_input.update_session_name(name);

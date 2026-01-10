@@ -18,8 +18,16 @@ impl CopyCommand {
         }
     }
     pub fn set(&self, value: String) -> Result<()> {
-        let mut process = Command::new(self.command.clone())
-            .args(self.args.clone())
+        self.set_with_env(value, None)
+    }
+    
+    pub fn set_with_env(&self, value: String, display: Option<String>) -> Result<()> {
+        let mut cmd = Command::new(self.command.clone());
+        cmd.args(self.args.clone());
+        if let Some(display_value) = display {
+            cmd.env("DISPLAY", display_value);
+        }
+        let mut process = cmd
             .stdin(Stdio::piped())
             .spawn()
             .with_context(|| format!("couldn't spawn {}", self.command))?;

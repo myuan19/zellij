@@ -22,6 +22,14 @@ pub struct CliAssets {
     pub max_panes: Option<usize>,
     pub force_run_layout_commands: bool,
     pub cwd: Option<PathBuf>,
+    /// Whether the client has X11 environment (DISPLAY variable set)
+    /// None means unknown (for backward compatibility)
+    #[serde(default)]
+    pub has_x11: Option<bool>,
+    /// DISPLAY environment variable value from the client
+    /// Used for X11 forwarding when executing xclip
+    #[serde(default)]
+    pub display: Option<String>,
 }
 
 impl CliAssets {

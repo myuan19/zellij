@@ -742,6 +742,7 @@ pub fn start_server(mut os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
                         rounded_corners: config.ui.pane_frames.rounded_corners,
                         hide_session_name: config.ui.pane_frames.hide_session_name,
                     },
+                    has_x11: cli_assets.has_x11,
                 };
 
                 let mut session = init_session(
@@ -774,6 +775,23 @@ pub fn start_server(mut os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
                     client_attributes.size,
                     is_web_client,
                 );
+
+                // Add the first client with X11 info before creating tabs
+                session_data
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .senders
+                    .send_to_screen(ScreenInstruction::AddClient(
+                        client_id,
+                        is_web_client,
+                        None, // tab_position_to_focus
+                        None, // pane_id_to_focus
+                        cli_assets.has_x11,
+                        cli_assets.display,
+                    ))
+                    .unwrap();
 
                 let default_shell = runtime_config_options.default_shell.map(|shell| {
                     TerminalAction::RunCommand(RunCommand {
@@ -896,6 +914,7 @@ pub fn start_server(mut os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
                         rounded_corners: config.ui.pane_frames.rounded_corners,
                         hide_session_name: config.ui.pane_frames.hide_session_name,
                     },
+                    has_x11: cli_assets.has_x11,
                 };
 
                 let mut runtime_configuration = config.clone();
@@ -930,6 +949,8 @@ pub fn start_server(mut os_input: Box<dyn ServerOsApi>, socket_path: PathBuf) {
                         is_web_client,
                         tab_position_to_focus,
                         pane_id_to_focus,
+                        client_attributes.has_x11,
+                        cli_assets.display,
                     ))
                     .unwrap();
                 session_data

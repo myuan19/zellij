@@ -21,6 +21,7 @@ pub struct SessionLayoutMetadata {
     pub default_shell: Option<PathBuf>,
     pub default_editor: Option<PathBuf>,
     tabs: Vec<TabLayoutMetadata>,
+    client_x11_info: HashMap<ClientId, bool>, // Client X11 availability info
 }
 
 impl SessionLayoutMetadata {
@@ -29,6 +30,9 @@ impl SessionLayoutMetadata {
             default_layout,
             ..Default::default()
         }
+    }
+    pub fn set_client_x11_info(&mut self, client_x11_info: HashMap<ClientId, bool>) {
+        self.client_x11_info = client_x11_info;
     }
     pub fn update_default_shell(&mut self, default_shell: PathBuf) {
         if self.default_shell.is_none() {
@@ -60,6 +64,10 @@ impl SessionLayoutMetadata {
         }
     }
     pub fn list_clients_metadata(&self) -> String {
+        self.list_clients_metadata_with_x11(&self.client_x11_info)
+    }
+    
+    pub fn list_clients_metadata_with_x11(&self, client_x11_info: &HashMap<ClientId, bool>) -> String {
         let mut clients_metadata: BTreeMap<ClientId, ClientMetadata> = BTreeMap::new();
         for tab in &self.tabs {
             let panes = if tab.hide_floating_panes {
@@ -74,6 +82,7 @@ impl SessionLayoutMetadata {
                         ClientMetadata {
                             pane_id: pane.id.clone(),
                             command: pane.run.clone(),
+                            has_x11: client_x11_info.get(focused_client).copied(),
                         },
                     );
                 }
@@ -83,6 +92,10 @@ impl SessionLayoutMetadata {
         ClientMetadata::render_many(clients_metadata, &self.default_editor)
     }
     pub fn all_clients_metadata(&self) -> BTreeMap<ClientId, ClientMetadata> {
+        self.all_clients_metadata_with_x11(&self.client_x11_info)
+    }
+    
+    pub fn all_clients_metadata_with_x11(&self, client_x11_info: &HashMap<ClientId, bool>) -> BTreeMap<ClientId, ClientMetadata> {
         let mut clients_metadata: BTreeMap<ClientId, ClientMetadata> = BTreeMap::new();
         for tab in &self.tabs {
             let panes = if tab.hide_floating_panes {
@@ -97,6 +110,7 @@ impl SessionLayoutMetadata {
                         ClientMetadata {
                             pane_id: pane.id.clone(),
                             command: pane.run.clone(),
+                            has_x11: client_x11_info.get(focused_client).copied(),
                         },
                     );
                 }
@@ -422,6 +436,7 @@ impl PaneLayoutMetadata {
 pub struct ClientMetadata {
     pane_id: PaneId,
     command: Option<Run>,
+    has_x11: Option<bool>, // Whether the client has X11 environment
 }
 impl ClientMetadata {
     pub fn stringify_pane_id(&self) -> String {
@@ -459,18 +474,24 @@ impl ClientMetadata {
         default_editor: &Option<PathBuf>,
     ) -> String {
         let mut lines = vec![];
-        lines.push(String::from("CLIENT_ID ZELLIJ_PANE_ID RUNNING_COMMAND"));
+        lines.push(String::from("CLIENT_ID ZELLIJ_PANE_ID RUNNING_COMMAND HAS_X11"));
 
         for (client_id, client_metadata) in clients_metadata.iter() {
-            // 9 - CLIENT_ID, 14 - ZELLIJ_PANE_ID, 15 - RUNNING_COMMAND
+            let has_x11_str = match client_metadata.has_x11 {
+                Some(true) => "YES",
+                Some(false) => "NO",
+                None => "UNKNOWN",
+            };
+            // 9 - CLIENT_ID, 14 - ZELLIJ_PANE_ID, 15 - RUNNING_COMMAND, 8 - HAS_X11
             lines.push(format!(
-                "{} {} {}",
+                "{} {} {} {}",
                 format!("{0: <9}", client_id),
                 format!("{0: <14}", client_metadata.stringify_pane_id()),
                 format!(
                     "{0: <15}",
                     client_metadata.stringify_command(default_editor)
-                )
+                ),
+                format!("{0: <8}", has_x11_str)
             ));
         }
         lines.join("\n")

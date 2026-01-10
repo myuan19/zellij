@@ -509,6 +509,8 @@ impl From<crate::input::cli_assets::CliAssets>
             max_panes: cli_assets.max_panes.map(|m| m as u32),
             force_run_layout_commands: cli_assets.force_run_layout_commands,
             cwd: cli_assets.cwd.map(|p| p.to_string_lossy().to_string()),
+            has_x11: cli_assets.has_x11,
+            display: cli_assets.display,
         }
     }
 }
@@ -538,6 +540,8 @@ impl TryFrom<crate::client_server_contract::client_server_contract::CliAssets>
             max_panes: cli_assets.max_panes.map(|m| m as usize),
             force_run_layout_commands: cli_assets.force_run_layout_commands,
             cwd: cli_assets.cwd.map(PathBuf::from),
+            has_x11: cli_assets.has_x11,
+            display: cli_assets.display,
         })
     }
 }

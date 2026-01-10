@@ -1423,7 +1423,7 @@ fn attach_after_first_tab_closed() {
 
     screen.close_tab_at_index(0).expect("TEST");
     screen.remove_client(1).expect("TEST");
-    screen.add_client(1, false).expect("TEST");
+    screen.add_client(1, false, None).expect("TEST");
 }
 
 #[test]

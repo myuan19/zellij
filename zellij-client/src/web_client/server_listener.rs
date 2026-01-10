@@ -77,6 +77,7 @@ pub fn zellij_server_listener(
                             rounded_corners: config.ui.pane_frames.rounded_corners,
                             hide_session_name: config.ui.pane_frames.hide_session_name,
                         },
+                        has_x11: None, // Web clients don't have X11
                     };
 
                     let session_name = PathBuf::from(path.clone())

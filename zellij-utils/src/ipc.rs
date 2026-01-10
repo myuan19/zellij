@@ -51,6 +51,10 @@ pub enum ClientType {
 pub struct ClientAttributes {
     pub size: Size,
     pub style: Style,
+    /// Whether the client has X11 environment (DISPLAY variable set)
+    /// None means unknown (for backward compatibility)
+    #[serde(default)]
+    pub has_x11: Option<bool>,
 }
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]

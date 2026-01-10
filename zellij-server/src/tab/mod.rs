@@ -31,7 +31,7 @@ use crate::ui::{loading_indication::LoadingIndication, pane_boundaries_frame::Fr
 use layout_applier::LayoutApplier;
 use swap_layouts::SwapLayouts;
 
-use self::clipboard::{ClipboardProvider, resolve_auto_copy_command};
+use self::clipboard::ClipboardProvider;
 use crate::route::NotificationEnd;
 use crate::{
     os_input_output::ServerOsApi,
@@ -271,6 +271,8 @@ pub(crate) struct Tab {
     advanced_mouse_actions: bool,
     currently_marking_pane_group: Rc<RefCell<HashMap<ClientId, bool>>>,
     connected_clients_in_app: Rc<RefCell<HashMap<ClientId, bool>>>, // bool -> is_web_client
+    client_x11_available: Rc<RefCell<HashMap<ClientId, bool>>>, // Whether each client has X11 environment
+    client_display: Rc<RefCell<HashMap<ClientId, String>>>, // DISPLAY environment variable value for each client
     // the below are the configured values - the ones that will be set if and when the web server
     // is brought online
     web_server_ip: IpAddr,
@@ -741,11 +743,8 @@ impl Tab {
 
         let clipboard_provider = match copy_options.command.as_deref() {
             Some("auto") => {
-                // Resolve auto mode: use xclip if X11 available, otherwise OSC52
-                match resolve_auto_copy_command() {
-                    Some(command) => ClipboardProvider::Command(CopyCommand::new(command)),
-                    None => ClipboardProvider::Osc52(copy_options.clipboard),
-                }
+                // Use Auto mode: dynamically detect on each copy operation
+                ClipboardProvider::Auto(copy_options.clipboard)
             },
             Some(command) => ClipboardProvider::Command(CopyCommand::new(command.to_string())),
             None => ClipboardProvider::Osc52(copy_options.clipboard),
@@ -801,6 +800,8 @@ impl Tab {
             currently_marking_pane_group,
             advanced_mouse_actions,
             connected_clients_in_app,
+            client_x11_available: Rc::new(RefCell::new(HashMap::new())),
+            client_display: Rc::new(RefCell::new(HashMap::new())),
             web_server_ip,
             web_server_port,
         }
@@ -1150,7 +1151,7 @@ impl Tab {
             .with_context(|| format!("failed to update plugins with mode info"))?;
         Ok(())
     }
-    pub fn add_client(&mut self, client_id: ClientId, mode_info: Option<ModeInfo>) -> Result<()> {
+    pub fn add_client(&mut self, client_id: ClientId, mode_info: Option<ModeInfo>, has_x11: Option<bool>, display: Option<String>) -> Result<()> {
         let other_clients_exist_in_tab = { !self.connected_clients.borrow().is_empty() };
         if other_clients_exist_in_tab {
             if let Some(first_active_floating_pane_id) =
@@ -1168,6 +1169,13 @@ impl Tab {
                 client_id,
                 mode_info.unwrap_or_else(|| self.default_mode_info.clone()),
             );
+            // Store client X11 availability and DISPLAY value
+            if let Some(x11_available) = has_x11 {
+                self.client_x11_available.borrow_mut().insert(client_id, x11_available);
+            }
+            if let Some(display_value) = display {
+                self.client_display.borrow_mut().insert(client_id, display_value);
+            }
         } else {
             let mut pane_ids: Vec<PaneId> = self.tiled_panes.pane_ids().copied().collect();
             if pane_ids.is_empty() {
@@ -1192,6 +1200,13 @@ impl Tab {
                 client_id,
                 mode_info.unwrap_or_else(|| self.default_mode_info.clone()),
             );
+            // Store client X11 availability and DISPLAY value
+            if let Some(x11_available) = has_x11 {
+                self.client_x11_available.borrow_mut().insert(client_id, x11_available);
+            }
+            if let Some(display_value) = display {
+                self.client_display.borrow_mut().insert(client_id, display_value);
+            }
         }
         self.set_force_render();
         Ok(())
@@ -1206,7 +1221,7 @@ impl Tab {
         client_ids_to_mode_infos: Vec<(ClientId, ModeInfo)>,
     ) -> Result<()> {
         for (client_id, client_mode_info) in client_ids_to_mode_infos {
-            self.add_client(client_id, None)
+            self.add_client(client_id, None, None, None) // X11 info not available in this context
                 .context("failed to add clients")?;
             self.mode_info
                 .borrow_mut()
@@ -1221,6 +1236,9 @@ impl Tab {
             .get_mut(&client_id)
             .map(|c| c.change_to_default_mode()); // TODO: no races?
         self.connected_clients.borrow_mut().remove(&client_id);
+        // Remove client X11 availability info and DISPLAY value
+        self.client_x11_available.borrow_mut().remove(&client_id);
+        self.client_display.borrow_mut().remove(&client_id);
         self.set_force_render();
     }
     pub fn drain_connected_clients(
@@ -1248,6 +1266,14 @@ impl Tab {
     pub fn has_no_connected_clients(&self) -> bool {
         self.connected_clients.borrow().is_empty()
     }
+    pub fn get_client_x11_info(&self) -> HashMap<ClientId, bool> {
+        self.client_x11_available.borrow().clone()
+    }
+    
+    pub fn get_client_display(&self, client_id: ClientId) -> Option<String> {
+        self.client_display.borrow().get(&client_id).cloned()
+    }
+    
     pub fn pane_id_is_floating(&self, pane_id: &PaneId) -> bool {
         self.floating_panes.panes_contain(pane_id)
     }
@@ -2518,7 +2544,7 @@ impl Tab {
                     .with_context(err_context)?;
             }
             if let Some(string) = clipboard_update {
-                self.write_selection_to_clipboard(&string)
+                self.write_selection_to_clipboard(&string, None) // No specific source client in this context
                     .with_context(err_context)?;
             }
         }
@@ -4514,7 +4540,7 @@ impl Tab {
 
                         if let Some(selected_text) = selected_text {
                             leave_clipboard_message = true;
-                            self.write_selection_to_clipboard(&selected_text)
+                            self.write_selection_to_clipboard(&selected_text, Some(client_id))
                                 .with_context(err_context)?;
                         }
                     }
@@ -4789,7 +4815,7 @@ impl Tab {
             .get_active_pane(client_id)
             .and_then(|p| p.get_selected_text(client_id));
         if let Some(selected_text) = selected_text {
-            self.write_selection_to_clipboard(&selected_text)
+            self.write_selection_to_clipboard(&selected_text, Some(client_id))
                 .with_context(|| {
                     format!("failed to write selection to clipboard for client {client_id}")
                 })?;
@@ -4807,7 +4833,7 @@ impl Tab {
         Ok(())
     }
     pub fn copy_text_to_clipboard(&self, text: &str) -> Result<()> {
-        self.write_selection_to_clipboard(text)
+        self.write_selection_to_clipboard(text, None) // No specific source client
             .with_context(|| format!("failed to write text to clipboard"))?;
         self.senders
             .send_to_plugin(PluginInstruction::Update(vec![(
@@ -4820,7 +4846,7 @@ impl Tab {
         Ok(())
     }
 
-    fn write_selection_to_clipboard(&self, selection: &str) -> Result<()> {
+    fn write_selection_to_clipboard(&self, selection: &str, source_client_id: Option<ClientId>) -> Result<()> {
         let err_context = || format!("failed to write selection to clipboard: '{}'", selection);
 
         let mut output = Output::default();
@@ -4831,7 +4857,14 @@ impl Tab {
         let clipboard_event =
             match self
                 .clipboard_provider
-                .set_content(selection, &mut output, client_ids)
+                .set_content(
+                    selection, 
+                    &mut output, 
+                    client_ids,
+                    source_client_id,
+                    &self.client_x11_available.borrow(),
+                    |client_id| self.get_client_display(client_id),
+                )
             {
                 Ok(_) => output
                     .serialize()
@@ -5627,11 +5660,8 @@ impl Tab {
     pub fn update_copy_options(&mut self, copy_options: &CopyOptions) {
         self.clipboard_provider = match copy_options.command.as_deref() {
             Some("auto") => {
-                // Resolve auto mode: use xclip if X11 available, otherwise OSC52
-                match resolve_auto_copy_command() {
-                    Some(command) => ClipboardProvider::Command(CopyCommand::new(command)),
-                    None => ClipboardProvider::Osc52(copy_options.clipboard),
-                }
+                // Use Auto mode: dynamically detect on each copy operation
+                ClipboardProvider::Auto(copy_options.clipboard)
             },
             Some(command) => ClipboardProvider::Command(CopyCommand::new(command.to_string())),
             None => ClipboardProvider::Osc52(copy_options.clipboard),

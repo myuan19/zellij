@@ -626,6 +626,8 @@ message CliAssets {
   optional uint32 max_panes = 9;
   bool force_run_layout_commands = 10;
   optional string cwd = 11;
+  optional bool has_x11 = 12;
+  optional string display = 13;
 }
 
 message LayoutInfo {

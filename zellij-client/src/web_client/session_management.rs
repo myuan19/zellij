@@ -79,6 +79,9 @@ pub fn create_first_message(
     config_opts.web_sharing = Some(WebSharing::On);
 
     let is_web_client = true;
+    // Web clients don't have X11
+    let has_x11 = None;
+    
     if is_read_only {
         // read only clients attach as watchers
         ClientToServerMsg::AttachWatcherClient {
@@ -100,6 +103,8 @@ pub fn create_first_message(
             max_panes: None,
             force_run_layout_commands: false,
             cwd: None,
+            has_x11,
+            display: None, // Web clients don't have X11/DISPLAY
         };
 
         ClientToServerMsg::FirstClientConnected {
@@ -119,6 +124,8 @@ pub fn create_first_message(
             max_panes: None,
             force_run_layout_commands: false,
             cwd: None,
+            has_x11,
+            display: None, // Web clients don't have X11/DISPLAY
         };
         let is_web_client = true;
 
