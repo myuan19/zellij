@@ -496,4 +496,62 @@ impl ClientMetadata {
         }
         lines.join("\n")
     }
+    
+    /// Render clients metadata with session name.
+    /// Session name is only shown on the first line for each session, subsequent lines leave it blank.
+    /// Session name is formatted with green bold color (same as `zellij ls`).
+    pub fn render_many_with_session(
+        session_name: &str,
+        clients_metadata: BTreeMap<ClientId, ClientMetadata>,
+        default_editor: &Option<PathBuf>,
+    ) -> Vec<String> {
+        let mut lines = vec![];
+        
+        if clients_metadata.is_empty() {
+            // Even if no clients, show session name
+            let formatted_session_name = format!("\u{1b}[32;1m{}\u{1b}[m", session_name);
+            lines.push(format!("{0: <20} (No clients connected)", formatted_session_name));
+            return lines;
+        }
+        
+        let mut is_first_client = true;
+        for (client_id, client_metadata) in clients_metadata.iter() {
+            let has_x11_str = match client_metadata.has_x11 {
+                Some(true) => "YES",
+                Some(false) => "NO",
+                None => "UNKNOWN",
+            };
+            
+            if is_first_client {
+                // First line shows session name (green bold, same as `zellij ls`)
+                let formatted_session_name = format!("\u{1b}[32;1m{}\u{1b}[m", session_name);
+                lines.push(format!(
+                    "{} {} {} {} {}",
+                    format!("{0: <20}", formatted_session_name),
+                    format!("{0: <9}", client_id),
+                    format!("{0: <14}", client_metadata.stringify_pane_id()),
+                    format!(
+                        "{0: <15}",
+                        client_metadata.stringify_command(default_editor)
+                    ),
+                    format!("{0: <8}", has_x11_str)
+                ));
+            } else {
+                // Subsequent lines leave SESSION column blank
+                lines.push(format!(
+                    "{} {} {} {} {}",
+                    format!("{0: <20}", ""),  // Leave blank
+                    format!("{0: <9}", client_id),
+                    format!("{0: <14}", client_metadata.stringify_pane_id()),
+                    format!(
+                        "{0: <15}",
+                        client_metadata.stringify_command(default_editor)
+                    ),
+                    format!("{0: <8}", has_x11_str)
+                ));
+            }
+            is_first_client = false;
+        }
+        lines
+    }
 }

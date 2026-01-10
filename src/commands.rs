@@ -10,7 +10,7 @@ use zellij_client::{
     old_config_converter::{
         config_yaml_to_config_kdl, convert_old_yaml_files, layout_yaml_to_layout_kdl,
     },
-    os_input_output::get_client_os_input,
+    os_input_output::{get_client_os_input, ClientOsApi},
     start_client as start_client_impl, ClientInfo,
 };
 
@@ -380,6 +380,12 @@ pub(crate) fn send_action_to_session(
     requested_session_name: Option<String>,
     config: Option<Config>,
 ) {
+    // Check if this is ListClients action - if so, list all sessions' clients
+    if matches!(cli_action, zellij_utils::cli::CliAction::ListClients) {
+        list_all_clients(config);
+        return;
+    }
+    
     match get_active_session() {
         ActiveSession::None => {
             eprintln!("There is no active session!");
@@ -424,6 +430,324 @@ pub(crate) fn send_action_to_session(
             }
         },
     };
+}
+
+// Internal structures for client listing
+#[derive(Debug)]
+struct ClientRow {
+    client_id: String,
+    pane_id: String,
+    command: String,
+    has_x11: String,
+}
+
+struct SessionData {
+    name: String,
+    clients: Vec<ClientRow>,
+}
+
+/// List all clients from all sessions with tree format
+pub(crate) fn list_all_clients(config: Option<Config>) {
+    use std::collections::HashMap;
+    
+    // Get all sessions, sorted like `zellij ls` (oldest first by default)
+    let running_sessions = match get_sessions() {
+        Ok(sessions) => sessions,
+        Err(_) => {
+            eprintln!("No active zellij sessions found.");
+            std::process::exit(1);
+        }
+    };
+    
+    let resurrectable_sessions = get_resurrectable_sessions();
+    let mut all_sessions: HashMap<String, (Duration, bool)> = resurrectable_sessions
+        .iter()
+        .map(|(name, timestamp)| (name.clone(), (timestamp.clone(), true)))
+        .collect();
+    for (session_name, duration) in running_sessions {
+        all_sessions.insert(session_name.clone(), (duration, false));
+    }
+    
+    // Sort like `zellij ls` (default: oldest first, b.1.cmp(&a.1))
+    let mut sessions_vec: Vec<(String, Duration, bool)> = all_sessions
+        .iter()
+        .map(|(name, (timestamp, is_dead))| (name.clone(), timestamp.clone(), *is_dead))
+        .collect();
+    sessions_vec.sort_by(|a, b| {
+        // Default sort: oldest first (b.1.cmp(&a.1))
+        b.1.cmp(&a.1)
+    });
+    
+    // Collect all client data first
+    let mut sessions_data: Vec<SessionData> = Vec::new();
+    
+    for (session_name, _duration, is_dead) in sessions_vec {
+        if is_dead {
+            continue;
+        }
+        
+        if let Ok(output) = query_session_clients_output(&session_name, config.clone()) {
+            let clients = parse_clients_output(&session_name, &output);
+            if !clients.is_empty() {
+                sessions_data.push(SessionData {
+                    name: session_name,
+                    clients,
+                });
+            }
+        }
+    }
+    
+    if sessions_data.is_empty() {
+        eprintln!("No clients found in any session.");
+        std::process::exit(0);
+    }
+    
+    // Calculate column widths (excluding ANSI escape codes)
+    fn visible_width(s: &str) -> usize {
+        let mut width = 0;
+        let mut in_escape = false;
+        for ch in s.chars() {
+            if in_escape {
+                if ch == 'm' {
+                    in_escape = false;
+                }
+            } else if ch == '\u{1b}' {
+                in_escape = true;
+            } else {
+                width += 1;
+            }
+        }
+        width
+    }
+    
+    // Calculate max widths for each column
+    // Column 0: First column width = client prefix + client_id + spacing
+    // For example: "│   └── 2" -> prefix "│   └── " (8 chars) + "2" (1 char) + spacing (2 chars) = 11
+    let mut max_first_column_width = visible_width("SESSION");
+    
+    // Column 1: ZELLIJ_PANE_ID
+    let mut max_pane_id_width = visible_width("ZELLIJ_PANE_ID");
+    // Column 2: RUNNING_COMMAND
+    let mut max_command_width = visible_width("RUNNING_COMMAND");
+    // Column 3: HAS_X11
+    let mut max_has_x11_width = visible_width("HAS_X11");
+    
+    // Calculate tree prefix widths
+    let session_prefix_width = visible_width("├── ");
+    let client_prefix_width = visible_width("│   ├── "); // All client prefixes have same width (8 chars)
+    
+    // Fixed spacing between columns
+    const COLUMN_SPACING: usize = 2;
+    let spacing_str = " ".repeat(COLUMN_SPACING);
+    
+    for session in &sessions_data {
+        // Session name width (with prefix, but we'll align it to match client lines)
+        let session_display_width = session_prefix_width + visible_width(&session.name);
+        
+        for client in &session.clients {
+            // Client line width: prefix + client_id + spacing
+            // This determines the first column width
+            let client_line_width = client_prefix_width + visible_width(&client.client_id) + COLUMN_SPACING;
+            max_first_column_width = max_first_column_width.max(client_line_width);
+            
+            max_pane_id_width = max_pane_id_width.max(visible_width(&client.pane_id));
+            max_command_width = max_command_width.max(visible_width(&client.command));
+            max_has_x11_width = max_has_x11_width.max(visible_width(&client.has_x11));
+        }
+        
+        // Session line should also fit within first column width
+        max_first_column_width = max_first_column_width.max(session_display_width + COLUMN_SPACING);
+    }
+    
+    // Print header with calculated widths
+    println!(
+        "{:<width_first$}{}{:<width_pane$}{}{:<width_command$}{}{:<width_x11$}",
+        "SESSION",
+        spacing_str,
+        "ZELLIJ_PANE_ID",
+        spacing_str,
+        "RUNNING_COMMAND",
+        spacing_str,
+        "HAS_X11",
+        width_first = max_first_column_width,
+        width_pane = max_pane_id_width,
+        width_command = max_command_width,
+        width_x11 = max_has_x11_width,
+    );
+    
+    // Print tree structure
+    for (session_idx, session) in sessions_data.iter().enumerate() {
+        let is_last_session = session_idx == sessions_data.len() - 1;
+        let session_prefix = if is_last_session { "└── " } else { "├── " };
+        let session_connector = if is_last_session { "    " } else { "│   " };
+        
+        // Print session name (formatted with green bold)
+        let formatted_session_name = format!("\u{1b}[32;1m{}\u{1b}[m", session.name);
+        let session_line = format!("{}{}", session_prefix, formatted_session_name);
+        
+        println!(
+            "{:<width_first$}{}{:<width_pane$}{}{:<width_command$}{}{:<width_x11$}",
+            session_line,
+            spacing_str,
+            "",
+            spacing_str,
+            "",
+            spacing_str,
+            "",
+            width_first = max_first_column_width,
+            width_pane = max_pane_id_width,
+            width_command = max_command_width,
+            width_x11 = max_has_x11_width,
+        );
+        
+        // Print clients under this session
+        for (client_idx, client) in session.clients.iter().enumerate() {
+            let is_last_client = client_idx == session.clients.len() - 1;
+            let client_prefix = if is_last_client { "└── " } else { "├── " };
+            let client_line_prefix = format!("{}{}", session_connector, client_prefix);
+            let client_line = format!("{}{}", client_line_prefix, client.client_id);
+            
+            println!(
+                "{:<width_first$}{}{:<width_pane$}{}{:<width_command$}{}{:<width_x11$}",
+                client_line,
+                spacing_str,
+                client.pane_id,
+                spacing_str,
+                client.command,
+                spacing_str,
+                client.has_x11,
+                width_first = max_first_column_width,
+                width_pane = max_pane_id_width,
+                width_command = max_command_width,
+                width_x11 = max_has_x11_width,
+            );
+        }
+    }
+    
+    std::process::exit(0);
+}
+
+/// Query clients for a session by connecting via CLI client and capturing output
+fn query_session_clients_output(
+    session_name: &str,
+    _config: Option<Config>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use std::time::Duration as StdDuration;
+    
+    // Create a CLI client to query the session
+    let os_input = get_os_input(zellij_client::os_input_output::get_cli_client_os_input);
+    let mut os_input: Box<dyn ClientOsApi> = Box::new(os_input);
+    let zellij_ipc_pipe: PathBuf = {
+        let mut sock_dir = zellij_utils::consts::ZELLIJ_SOCK_DIR.clone();
+        std::fs::create_dir_all(&sock_dir)?;
+        zellij_utils::shared::set_permissions(&sock_dir, 0o700)?;
+        sock_dir.push(session_name);
+        sock_dir
+    };
+    
+    // Check if socket exists
+    if !zellij_ipc_pipe.exists() {
+        return Ok(String::new()); // Session doesn't exist or is dead
+    }
+    
+    os_input.connect_to_server(&zellij_ipc_pipe);
+    
+    // Send ListClients action
+    let action = Action::ListClients;
+    let msg = zellij_utils::ipc::ClientToServerMsg::Action {
+        action,
+        terminal_id: None,
+        client_id: None,
+        is_cli_client: true,
+    };
+    os_input.send_to_server(msg);
+    
+    // Capture output
+    let mut output_lines = Vec::new();
+    let start_time = std::time::Instant::now();
+    let timeout = StdDuration::from_secs(2);
+    
+    loop {
+        if start_time.elapsed() > timeout {
+            break; // Timeout
+        }
+        
+        match os_input.recv_from_server() {
+            Some((zellij_utils::ipc::ServerToClientMsg::Log { lines: log_lines }, _)) => {
+                output_lines.extend(log_lines);
+                break;
+            },
+            Some((zellij_utils::ipc::ServerToClientMsg::LogError { .. }, _)) => {
+                // Error occurred, return empty
+                return Ok(String::new());
+            },
+            Some((zellij_utils::ipc::ServerToClientMsg::UnblockInputThread, _)) => {
+                // Action completed but no output yet, continue waiting
+                continue;
+            },
+            Some((zellij_utils::ipc::ServerToClientMsg::Exit { .. }, _)) => {
+                // Exit received
+                break;
+            },
+            None => {
+                // No message available, wait a bit
+                std::thread::sleep(StdDuration::from_millis(10));
+                continue;
+            },
+            _ => {
+                // Other messages, continue
+                continue;
+            },
+        }
+    }
+    
+    Ok(output_lines.join("\n"))
+}
+
+/// Parse clients output and return structured data
+fn parse_clients_output(_session_name: &str, output: &str) -> Vec<ClientRow> {
+    let lines: Vec<&str> = output.lines().collect();
+    if lines.is_empty() {
+        return vec![];
+    }
+    
+    // Skip header line if present
+    let data_lines: Vec<&str> = lines
+        .iter()
+        .skip_while(|line| line.starts_with("CLIENT_ID"))
+        .skip_while(|line| line.trim().is_empty())
+        .copied()
+        .collect();
+    
+    if data_lines.is_empty() {
+        return vec![];
+    }
+    
+    let mut result = Vec::new();
+    
+    for line in data_lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        
+        // Parse line: "CLIENT_ID ZELLIJ_PANE_ID RUNNING_COMMAND HAS_X11"
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 4 {
+            let client_id = parts[0].to_string();
+            let pane_id = parts[1].to_string();
+            let command = parts[2..parts.len() - 1].join(" ");
+            let has_x11 = parts[parts.len() - 1].to_string();
+            
+            result.push(ClientRow {
+                client_id,
+                pane_id,
+                command,
+                has_x11,
+            });
+        }
+    }
+    
+    result
 }
 pub(crate) fn convert_old_config_file(old_config_file: PathBuf) {
     match File::open(&old_config_file) {
