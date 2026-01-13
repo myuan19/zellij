@@ -1218,10 +1218,10 @@ impl Tab {
 
     pub fn add_multiple_clients(
         &mut self,
-        client_ids_to_mode_infos: Vec<(ClientId, ModeInfo)>,
+        client_ids_to_mode_infos: Vec<(ClientId, ModeInfo, Option<bool>, Option<String>)>,
     ) -> Result<()> {
-        for (client_id, client_mode_info) in client_ids_to_mode_infos {
-            self.add_client(client_id, None, None, None) // X11 info not available in this context
+        for (client_id, client_mode_info, has_x11, display) in client_ids_to_mode_infos {
+            self.add_client(client_id, None, has_x11, display)
                 .context("failed to add clients")?;
             self.mode_info
                 .borrow_mut()
@@ -1244,7 +1244,7 @@ impl Tab {
     pub fn drain_connected_clients(
         &mut self,
         clients_to_drain: Option<Vec<ClientId>>,
-    ) -> Vec<(ClientId, ModeInfo)> {
+    ) -> Vec<(ClientId, ModeInfo, Option<bool>, Option<String>)> {
         // None => all clients
         let mut client_ids_to_mode_infos = vec![];
         let clients_to_drain = clients_to_drain
@@ -1254,14 +1254,19 @@ impl Tab {
         }
         client_ids_to_mode_infos
     }
-    pub fn drain_single_client(&mut self, client_id: ClientId) -> (ClientId, ModeInfo) {
+    pub fn drain_single_client(&mut self, client_id: ClientId) -> (ClientId, ModeInfo, Option<bool>, Option<String>) {
         let client_mode_info = self
             .mode_info
             .borrow_mut()
             .remove(&client_id)
             .unwrap_or_else(|| self.default_mode_info.clone());
+        let has_x11 = self.client_x11_available.borrow().get(&client_id).copied();
+        let display = self.client_display.borrow().get(&client_id).cloned();
         self.connected_clients.borrow_mut().remove(&client_id);
-        (client_id, client_mode_info)
+        // Remove X11 info since client is being drained
+        self.client_x11_available.borrow_mut().remove(&client_id);
+        self.client_display.borrow_mut().remove(&client_id);
+        (client_id, client_mode_info, has_x11, display)
     }
     pub fn has_no_connected_clients(&self) -> bool {
         self.connected_clients.borrow().is_empty()

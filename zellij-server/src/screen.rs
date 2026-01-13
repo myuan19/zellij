@@ -1028,7 +1028,7 @@ impl Screen {
 
     fn move_clients_from_closed_tab(
         &mut self,
-        client_ids_and_mode_infos: Vec<(ClientId, ModeInfo)>,
+        client_ids_and_mode_infos: Vec<(ClientId, ModeInfo, Option<bool>, Option<String>)>,
     ) -> Result<()> {
         let err_context = || "failed to move clients from closed tab".to_string();
 
@@ -1048,14 +1048,14 @@ impl Screen {
             .next()
             .context("screen contained no tabs")
             .with_context(err_context)?;
-        for (client_id, client_mode_info) in client_ids_and_mode_infos {
+        for (client_id, client_mode_info, has_x11, display) in client_ids_and_mode_infos {
             let client_tab_history = self.tab_history.entry(client_id).or_insert_with(Vec::new);
             if let Some(client_previous_tab) = client_tab_history.pop() {
                 if let Some(client_active_tab) = self.tabs.get_mut(&client_previous_tab) {
                     self.active_tab_indices
                         .insert(client_id, client_previous_tab);
                     client_active_tab
-                        .add_client(client_id, Some(client_mode_info), None, None) // X11 info not available when moving clients
+                        .add_client(client_id, Some(client_mode_info), has_x11, display)
                         .with_context(err_context)?;
                     continue;
                 }
@@ -1064,7 +1064,7 @@ impl Screen {
             self.tabs
                 .get_mut(&first_tab_index)
                 .with_context(err_context)?
-                .add_client(client_id, Some(client_mode_info), None, None) // X11 info not available when moving clients
+                .add_client(client_id, Some(client_mode_info), has_x11, display)
                 .with_context(err_context)?;
         }
         Ok(())
