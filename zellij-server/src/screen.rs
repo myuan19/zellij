@@ -1909,9 +1909,14 @@ impl Screen {
             self.followed_client_id = Some(client_id);
         }
 
+        // Always store X11 info in pending_client_x11_info for later use (e.g., in apply_layout)
+        // This ensures that X11 info is available even after exit/attach cycles
+        if has_x11.is_some() || display.is_some() {
+            self.pending_client_x11_info.insert(client_id, (has_x11, display.clone()));
+        }
+
         // If no tabs exist yet, store X11 info for later use
         if self.tabs.is_empty() {
-            self.pending_client_x11_info.insert(client_id, (has_x11, display));
             self.connected_clients
                 .borrow_mut()
                 .insert(client_id, is_web_client);
